@@ -1,0 +1,11 @@
+#!/bin/sh
+cd /etc/openvpn
+
+# Prevent race conditions.
+sleep 1
+
+while ! [ -f client.ovpn ]; do
+    sleep 3
+done
+
+cat client.ovpn

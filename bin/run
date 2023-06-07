@@ -1,0 +1,134 @@
+#!/bin/sh
+set -e
+
+[ -d /dev/net ] ||
+    mkdir -p /dev/net
+[ -c /dev/net/tun ] ||
+    mknod /dev/net/tun c 10 200
+
+cd /etc/openvpn
+
+[ -f dh.pem ] ||
+    openssl dhparam -out dh.pem 2048
+[ -f key.pem ] ||
+    openssl genrsa -out key.pem 2048
+
+chmod 600 key.pem
+
+[ -f csr.pem ] ||
+    openssl req -new -key key.pem -out csr.pem -subj /CN=OpenVPN/
+[ -f cert.pem ] ||
+    openssl x509 -req -in csr.pem -out cert.pem -signkey key.pem -days 24855
+
+[ -f ta.key ] ||
+  openvpn --genkey tls-auth ta.key
+
+[ -f tcp443.conf ] || cat >tcp443.conf <<EOF
+server 192.168.255.0 255.255.255.128
+verb 3
+duplicate-cn
+key key.pem
+ca cert.pem
+cert cert.pem
+dh dh.pem
+keepalive 10 60
+
+cipher AES-256-GCM
+tls-cipher TLS-DHE-RSA-WITH-AES-256-CBC-SHA
+
+tls-server
+tls-auth ta.key 0
+
+persist-key
+persist-tun
+push "dhcp-option DNS 8.8.8.8"
+push "dhcp-option DNS 8.8.4.4"
+
+proto tcp-server
+port 443
+dev tun443
+topology subnet
+status openvpn-status-443.log
+EOF
+
+[ -f udp1194.conf ] || cat >udp1194.conf <<EOF
+server 192.168.255.128 255.255.255.128
+verb 3
+duplicate-cn
+key key.pem
+ca cert.pem
+cert cert.pem
+dh dh.pem
+keepalive 10 60
+
+cipher AES-256-GCM
+tls-cipher TLS-DHE-RSA-WITH-AES-256-CBC-SHA
+
+tls-server
+tls-auth ta.key 0
+
+persist-key
+persist-tun
+push "dhcp-option DNS 8.8.8.8"
+push "dhcp-option DNS 8.8.4.4"
+
+proto udp
+port 1194
+dev tun1194
+topology subnet
+status openvpn-status-1194.log
+EOF
+
+PUBLIC_IP_ADDR=$(wget -qO- http://myip.enix.org/REMOTE_ADDR)
+[ "$PUBLIC_IP_ADDR" ] || {
+    echo "Cannot resolve public IP address."
+    exit 1
+}
+
+[ -f client.ovpn ] || cat >client.ovpn <<EOF
+client
+nobind
+dev tun
+redirect-gateway def1
+
+cipher AES-256-GCM
+tls-cipher TLS-DHE-RSA-WITH-AES-256-CBC-SHA
+
+tls-client
+key-direction 1
+remote-cert-tls server
+
+<key>
+`cat key.pem`
+</key>
+<cert>
+`cat cert.pem`
+</cert>
+<ca>
+`cat cert.pem`
+</ca>
+<dh>
+`cat dh.pem`
+</dh>
+<tls-auth>
+`cat ta.key`
+</tls-auth>
+
+<connection>
+remote $PUBLIC_IP_ADDR 1194 udp
+</connection>
+
+<connection>
+remote $PUBLIC_IP_ADDR 443 tcp-client
+</connection>
+EOF
+
+iptables -t nat -A POSTROUTING -s 192.168.255.0/24 -o eth0 -j MASQUERADE
+
+touch tcp443.log udp1194.log
+
+while true ; do openvpn tcp443.conf ; done >> tcp443.log &
+
+while true ; do openvpn udp1194.conf ; done >> udp1194.log &
+
+tail -F *.log
