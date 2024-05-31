@@ -107,9 +107,6 @@ remote-cert-tls server
 <ca>
 `cat cert.pem`
 </ca>
-<dh>
-`cat dh.pem`
-</dh>
 <tls-auth>
 `cat ta.key`
 </tls-auth>
